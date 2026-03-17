@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Login - Passport Appointment System{% endblock %}
+
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/auth/login.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="login-container">
+    <h2 class="login-title">Login to Your Account</h2>
+
+    <div id="error-message" class="alert alert-danger" style="display: none;"></div>
+
+    <form id="login-form" class="login-form">
+        <div class="form-group">
+            <label for="email">Email Address</label>
+            <input type="email" id="email" name="email" class="form-control" required>
+            <small id="email-error" class="form-text text-danger"></small>
+        </div>
+
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" class="form-control" required>
+            <small id="password-error" class="form-text text-danger"></small>
+        </div>
+
+        <div class="form-group">
+            <button type="submit" class="btn btn-primary btn-block">Log In</button>
+        </div>
+
+        <div class="form-group text-center">
+            <p>Don't have an account? <a href="{{ url_for('auth.register') }}">Register</a></p>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/auth/login.js') }}"></script>
+{% endblock %}
