@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}Register - Passport Appointment System{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+  <h2>Create an Account</h2>
+
+  <div class="alert alert-danger" id="error-container" style="display: none;"></div>
+
+  <form id="registration-form" class="auth-form">
+    <div class="form-group">
+      <label for="email">Email Address</label>
+      <input type="email" class="form-control" id="email" name="email" required>
+      <small class="form-text text-muted">We'll never share your email with anyone else.</small>
+    </div>
+
+    <div class="form-group">
+      <label for="password">Password</label>
+      <input type="password" class="form-control" id="password" name="password" required>
+      <small class="form-text text-muted">
+        Password must be at least 8 characters with 1 uppercase letter, 1 lowercase letter, and 1 number.
+      </small>
+    </div>
+
+    <div class="form-group">
+      <label for="confirm-password">Confirm Password</label>
+      <input type="password" class="form-control" id="confirm-password" name="confirm_password" required>
+    </div>
+
+    <button type="submit" class="btn btn-primary btn-block">Register</button>
+  </form>
+
+  <div class="auth-links">
+    <p>Already have an account? <a href="/login">Log in</a></p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/auth/register.js') }}"></script>
+{% endblock %}
