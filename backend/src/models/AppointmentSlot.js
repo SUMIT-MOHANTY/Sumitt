@@ -1,226 +1,275 @@
 /**
  * AppointmentSlot Model
- * Represents available time slots for scheduling appointments
+ * Represents available time slots at specific locations for passport appointments
  */
-const mongoose = require('mongoose');
-const { Schema } = mongoose;
 
-const appointmentSlotSchema = new Schema({
-  startTime: {
-    type: Date,
-    required: [true, 'Start time is required'],
-    validate: {
-      validator: function(v) {
-        return v instanceof Date && !isNaN(v);
-      },
-      message: props => `${props.value} is not a valid date!`
+const { Model, DataTypes } = require('sequelize');
+const { sequelize } = require('../config/database');
+const logger = require('../utils/logger');
+const Location = require('./Location');
+
+class AppointmentSlot extends Model {
+  /**
+   * Check if the slot has available capacity
+   * @returns {Promise<boolean>} - True if slot has capacity, false otherwise
+   */
+  async hasAvailableCapacity() {
+    try {
+      const bookingsCount = await sequelize.models.Booking.count({
+        where: {
+          slot_id: this.id
+        }
+      });
+
+      return bookingsCount < this.max_bookings;
+    } catch (error) {
+      logger.error(`Error checking slot capacity for slot ${this.id}: ${error.message}`);
+      throw new Error(`Failed to check slot capacity: ${error.message}`);
     }
-  },
-  endTime: {
-    type: Date,
-    required: [true, 'End time is required'],
-    validate: [
-      {
-        validator: function(v) {
-          return v instanceof Date && !isNaN(v);
-        },
-        message: props => `${props.value} is not a valid date!`
-      },
-      {
-        validator: function(v) {
-          return this.startTime < v;
-        },
-        message: props => 'End time must be after start time!'
+  }
+
+  /**
+   * Get remaining capacity for this slot
+   * @returns {Promise<number>} - Number of available bookings
+   */
+  async getRemainingCapacity() {
+    try {
+      const bookingsCount = await sequelize.models.Booking.count({
+        where: {
+          slot_id: this.id
+        }
+      });
+
+      return this.max_bookings - bookingsCount;
+    } catch (error) {
+      logger.error(`Error getting remaining capacity for slot ${this.id}: ${error.message}`);
+      throw new Error(`Failed to get remaining capacity: ${error.message}`);
+    }
+  }
+
+  /**
+   * Find available slots for a specific date range and location
+   * @param {number} locationId - Location ID
+   * @param {Date} startDate - Start date for the search
+   * @param {Date} endDate - End date for the search
+   * @returns {Promise<Array>} - Array of available appointment slots
+   */
+  static async findAvailableSlots(locationId, startDate = new Date(), endDate = null) {
+    try {
+      if (!endDate) {
+        // Default to 30 days from startDate
+        endDate = new Date();
+        endDate.setDate(startDate.getDate() + 30);
       }
-    ]
-  },
-  location: {
-    type: Schema.Types.ObjectId,
-    ref: 'Location',
-    required: [true, 'Location is required']
-  },
-  service: {
-    type: Schema.Types.ObjectId,
-    ref: 'Service',
-    required: [true, 'Service is required']
-  },
-  staff: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
-    required: [true, 'Staff member is required']
-  },
-  status: {
-    type: String,
-    enum: ['available', 'booked', 'blocked', 'cancelled'],
-    default: 'available',
-    required: true
-  },
-  appointment: {
-    type: Schema.Types.ObjectId,
-    ref: 'Appointment',
-    default: null
-  },
-  capacity: {
-    type: Number,
-    default: 1,
-    min: [1, 'Capacity must be at least 1'],
-    max: [10, 'Capacity cannot exceed 10']
-  },
-  bookedCount: {
-    type: Number,
-    default: 0,
-    min: [0, 'Booked count cannot be negative']
-  },
-  isRecurring: {
-    type: Boolean,
-    default: false
-  },
-  recurringPattern: {
-    type: String,
-    enum: ['daily', 'weekly', 'biweekly', 'monthly', null],
-    default: null
-  },
-  notes: {
-    type: String,
-    trim: true
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now
-  }
-}, {
-  timestamps: true
-});
 
-// Virtual field for duration in minutes
-appointmentSlotSchema.virtual('durationMinutes').get(function() {
+      // Format dates for database query
+      const formattedStartDate = startDate.toISOString().split('T')[0];
+      const formattedEndDate = endDate.toISOString().split('T')[0];
+
+      // Get all slots for the location in the date range
+      const slots = await AppointmentSlot.findAll({
+        where: {
+          location_id: locationId,
+          date: {
+            [sequelize.Sequelize.Op.between]: [formattedStartDate, formattedEndDate]
+          }
+        },
+        include: [
+          {
+            model: Location,
+            attributes: ['name', 'address']
+          }
+        ]
+      });
+
+      // Enhance slots with availability information
+      const enhancedSlots = await Promise.all(
+        slots.map(async (slot) => {
+          const remainingCapacity = await slot.getRemainingCapacity();
+          return {
+            ...slot.toJSON(),
+            available_bookings: remainingCapacity,
+            is_available: remainingCapacity > 0
+          };
+        })
+      );
+
+      // Filter only available slots
+      return enhancedSlots.filter(slot => slot.is_available);
+    } catch (error) {
+      logger.error(`Error finding available slots: ${error.message}`);
+      throw new Error(`Failed to find available slots: ${error.message}`);
+    }
+  }
+}
+
+AppointmentSlot.init(
+  {
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    location_id: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: {
+        model: 'locations',
+        key: 'id'
+      },
+      validate: {
+        isInt: {
+          msg: 'Location ID must be an integer'
+        }
+      }
+    },
+    date: {
+      type: DataTypes.DATEONLY,
+      allowNull: false,
+      validate: {
+        isDate: {
+          msg: 'Invalid date format'
+        },
+        isNotPast(value) {
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const slotDate = new Date(value);
+
+          if (slotDate < today) {
+            throw new Error('Appointment date cannot be in the past');
+          }
+        }
+      }
+    },
+    start_time: {
+      type: DataTypes.TIME,
+      allowNull: false
+    },
+    end_time: {
+      type: DataTypes.TIME,
+      allowNull: false,
+      validate: {
+        isLaterThanStartTime(value) {
+          if (this.start_time >= value) {
+            throw new Error('End time must be later than start time');
+          }
+        }
+      }
+    },
+    max_bookings: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 1,
+      validate: {
+        isInt: {
+          msg: 'Max bookings must be an integer'
+        },
+        min: {
+          args: [1],
+          msg: 'Max bookings must be at least 1'
+        },
+        async notExceedLocationCapacity(value) {
+          try {
+            const location = await Location.findByPk(this.location_id);
+            if (!location) {
+              throw new Error('Location not found');
+            }
+
+            if (value > location.capacity) {
+              throw new Error(`Max bookings cannot exceed location capacity of ${location.capacity}`);
+            }
+          } catch (error) {
+            throw new Error(`Validation error: ${error.message}`);
+          }
+        }
+      }
+    },
+    created_at: {
+      type: DataTypes.DATE,
+      defaultValue: DataTypes.NOW
+    }
+  },
+  {
+    sequelize,
+    modelName: 'AppointmentSlot',
+    tableName: 'appointment_slots',
+    timestamps: false,
+    underscored: true,
+    hooks: {
+      beforeValidate: async (slot) => {
+        // Additional validation could be added here
+      },
+      afterCreate: async (slot) => {
+        logger.info(`New appointment slot created: ID ${slot.id} at location ${slot.location_id} for ${slot.date}`);
+      }
+    }
+  }
+);
+
+// Define relationships
+AppointmentSlot.belongsTo(Location, { foreignKey: 'location_id' });
+Location.hasMany(AppointmentSlot, { foreignKey: 'location_id' });
+
+/**
+ * Seed sample appointment slots for the next 30 days
+ * @returns {Promise<Array>} - Array of created appointment slots
+ */
+AppointmentSlot.seedSampleData = async () => {
   try {
-    const start = this.startTime.getTime();
-    const end = this.endTime.getTime();
-    return Math.round((end - start) / (1000 * 60));
-  } catch (error) {
-    console.error('Error calculating duration:', error);
-    return 0;
-  }
-});
+    logger.info('Seeding sample appointment slots...');
 
-// Virtual field to check if slot is available
-appointmentSlotSchema.virtual('isAvailable').get(function() {
-  return this.status === 'available' && this.bookedCount < this.capacity;
-});
-
-// Pre-save middleware to update the updatedAt timestamp
-appointmentSlotSchema.pre('save', function(next) {
-  this.updatedAt = Date.now();
-
-  // Ensure bookedCount doesn't exceed capacity
-  if (this.bookedCount > this.capacity) {
-    this.bookedCount = this.capacity;
-  }
-
-  // Auto-update status based on bookedCount
-  if (this.bookedCount >= this.capacity && this.status === 'available') {
-    this.status = 'booked';
-  } else if (this.bookedCount < this.capacity && this.status === 'booked') {
-    this.status = 'available';
-  }
-
-  next();
-});
-
-// Method to check if a slot can be booked
-appointmentSlotSchema.methods.canBook = function() {
-  return this.status === 'available' && this.bookedCount < this.capacity;
-};
-
-// Method to book this slot
-appointmentSlotSchema.methods.book = async function(appointmentId) {
-  try {
-    if (!this.canBook()) {
-      throw new Error('This slot is not available for booking');
+    // Check if data already exists
+    const count = await AppointmentSlot.count();
+    if (count > 0) {
+      logger.info(`Appointment slots already seeded (${count} records found). Skipping.`);
+      return await AppointmentSlot.findAll();
     }
 
-    this.bookedCount += 1;
-    this.appointment = appointmentId;
-
-    if (this.bookedCount >= this.capacity) {
-      this.status = 'booked';
+    // Get all locations
+    const locations = await Location.findAll();
+    if (locations.length === 0) {
+      logger.info('No locations found. Please seed locations first.');
+      return [];
     }
 
-    await this.save();
-    return true;
+    const slots = [];
+    const today = new Date();
+
+    // Create slots for the next 30 days
+    for (let i = 1; i <= 30; i++) {
+      const date = new Date(today);
+      date.setDate(today.getDate() + i);
+      const formattedDate = date.toISOString().split('T')[0];
+
+      // For each location, create morning and afternoon slots
+      for (const location of locations) {
+        // Morning slot: 9:00 AM - 12:00 PM
+        slots.push({
+          location_id: location.id,
+          date: formattedDate,
+          start_time: '09:00:00',
+          end_time: '12:00:00',
+          max_bookings: Math.floor(location.capacity / 2)
+        });
+
+        // Afternoon slot: 1:00 PM - 4:00 PM
+        slots.push({
+          location_id: location.id,
+          date: formattedDate,
+          start_time: '13:00:00',
+          end_time: '16:00:00',
+          max_bookings: Math.floor(location.capacity / 2)
+        });
+      }
+    }
+
+    const createdSlots = await AppointmentSlot.bulkCreate(slots);
+    logger.info(`Created ${createdSlots.length} sample appointment slots`);
+    return createdSlots;
   } catch (error) {
-    console.error('Error booking slot:', error);
-    throw error;
+    logger.error(`Error seeding appointment slots: ${error.message}`);
+    throw new Error(`Failed to seed appointment slots: ${error.message}`);
   }
 };
-
-// Method to cancel a booking
-appointmentSlotSchema.methods.cancelBooking = async function(appointmentId) {
-  try {
-    if (this.status !== 'booked' || !this.appointment ||
-        this.appointment.toString() !== appointmentId.toString()) {
-      throw new Error('Invalid appointment for this slot');
-    }
-
-    this.bookedCount = Math.max(0, this.bookedCount - 1);
-
-    if (this.bookedCount < this.capacity) {
-      this.status = 'available';
-    }
-
-    if (this.bookedCount === 0) {
-      this.appointment = null;
-    }
-
-    await this.save();
-    return true;
-  } catch (error) {
-    console.error('Error cancelling booking:', error);
-    throw error;
-  }
-};
-
-// Static method to find available slots by date range and location
-appointmentSlotSchema.statics.findAvailableSlots = async function(
-  startDate,
-  endDate,
-  locationId,
-  serviceId = null,
-  staffId = null
-) {
-  try {
-    const query = {
-      startTime: { $gte: new Date(startDate) },
-      endTime: { $lte: new Date(endDate) },
-      status: 'available',
-      bookedCount: { $lt: '$capacity' }
-    };
-
-    if (locationId) query.location = locationId;
-    if (serviceId) query.service = serviceId;
-    if (staffId) query.staff = staffId;
-
-    return this.find(query)
-      .populate('location', 'name address')
-      .populate('service', 'name duration')
-      .populate('staff', 'name')
-      .sort({ startTime: 1 });
-  } catch (error) {
-    console.error('Error finding available slots:', error);
-    return [];
-  }
-};
-
-// Create indexes for better query performance
-appointmentSlotSchema.index({ startTime: 1, endTime: 1 });
-appointmentSlotSchema.index({ location: 1, service: 1, staff: 1 });
-appointmentSlotSchema.index({ status: 1 });
-
-const AppointmentSlot = mongoose.model('AppointmentSlot', appointmentSlotSchema);
 
 module.exports = AppointmentSlot;

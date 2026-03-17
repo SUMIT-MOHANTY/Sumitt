@@ -1,199 +1,163 @@
 /**
  * Location Model
- * Represents a physical location where appointments can be scheduled
+ * Represents a physical location where passport appointments can be booked
  */
-const mongoose = require('mongoose');
-const { Schema } = mongoose;
 
-const locationSchema = new Schema({
-  name: {
-    type: String,
-    required: [true, 'Location name is required'],
-    trim: true,
-    maxlength: [100, 'Location name cannot exceed 100 characters']
-  },
-  address: {
-    street: {
-      type: String,
-      required: [true, 'Street address is required'],
-      trim: true
-    },
-    city: {
-      type: String,
-      required: [true, 'City is required'],
-      trim: true
-    },
-    state: {
-      type: String,
-      required: [true, 'State is required'],
-      trim: true
-    },
-    zipCode: {
-      type: String,
-      required: [true, 'Zip code is required'],
-      trim: true,
-      validate: {
-        validator: function(v) {
-          // Basic US zip code validation (5 digits or ZIP+4 format)
-          return /^\d{5}(-\d{4})?$/.test(v);
-        },
-        message: props => `${props.value} is not a valid zip code!`
+const { Model, DataTypes } = require('sequelize');
+const { sequelize } = require('../config/database');
+const logger = require('../utils/logger');
+
+class Location extends Model {
+  /**
+   * Get all available appointment slots for this location
+   * @param {Date} startDate - Starting date for available slots (defaults to today)
+   * @param {Date} endDate - End date for available slots (defaults to 30 days from today)
+   * @returns {Promise<Array>} - Array of available appointment slots
+   */
+  async getAvailableSlots(startDate = new Date(), endDate = null) {
+    try {
+      if (!endDate) {
+        // Default to 30 days from startDate
+        endDate = new Date();
+        endDate.setDate(startDate.getDate() + 30);
       }
-    },
-    country: {
-      type: String,
-      required: [true, 'Country is required'],
-      trim: true,
-      default: 'USA'
-    }
-  },
-  phoneNumber: {
-    type: String,
-    required: [true, 'Phone number is required'],
-    trim: true,
-    validate: {
-      validator: function(v) {
-        // Basic phone validation
-        return /^\d{10}$|^\d{3}-\d{3}-\d{4}$|^\(\d{3}\)\s?\d{3}-\d{4}$/.test(v);
-      },
-      message: props => `${props.value} is not a valid phone number!`
-    }
-  },
-  email: {
-    type: String,
-    required: [true, 'Email is required'],
-    trim: true,
-    lowercase: true,
-    validate: {
-      validator: function(v) {
-        // Basic email validation
-        return /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/.test(v);
-      },
-      message: props => `${props.value} is not a valid email address!`
-    }
-  },
-  operatingHours: [{
-    day: {
-      type: String,
-      enum: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
-      required: true
-    },
-    openTime: {
-      type: String,
-      required: true,
-      // Time in 24-hour format (HH:MM)
-      validate: {
-        validator: function(v) {
-          return /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(v);
+
+      const { AppointmentSlot } = require('./AppointmentSlot');
+
+      // Find all slots for this location within date range that have capacity
+      const slots = await AppointmentSlot.findAll({
+        where: {
+          location_id: this.id,
+          date: {
+            [sequelize.Sequelize.Op.between]: [startDate, endDate]
+          }
         },
-        message: props => `${props.value} is not a valid time format (HH:MM)!`
-      }
-    },
-    closeTime: {
-      type: String,
-      required: true,
-      validate: {
-        validator: function(v) {
-          return /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(v);
-        },
-        message: props => `${props.value} is not a valid time format (HH:MM)!`
-      }
-    },
-    isClosed: {
-      type: Boolean,
-      default: false
+        include: [
+          {
+            model: sequelize.models.Booking,
+            attributes: ['id']
+          }
+        ]
+      });
+
+      // Filter slots that have available capacity
+      return slots.filter(slot => {
+        return slot.Bookings.length < slot.max_bookings;
+      });
+    } catch (error) {
+      logger.error(`Error getting available slots for location ${this.id}: ${error.message}`);
+      throw new Error(`Failed to get available slots: ${error.message}`);
     }
-  }],
-  services: [{
-    type: Schema.Types.ObjectId,
-    ref: 'Service'
-  }],
-  staff: [{
-    type: Schema.Types.ObjectId,
-    ref: 'User'
-  }],
-  isActive: {
-    type: Boolean,
-    default: true
-  },
-  maxDailyAppointments: {
-    type: Number,
-    default: 50,
-    min: [1, 'Must allow at least 1 appointment per day'],
-    max: [500, 'Cannot exceed 500 appointments per day']
-  },
-  notes: {
-    type: String,
-    trim: true
-  },
-  timezone: {
-    type: String,
-    default: 'America/New_York',
-    required: true
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now
   }
-}, {
-  timestamps: true
-});
 
-// Virtual field to get the full address
-locationSchema.virtual('fullAddress').get(function() {
-  return `${this.address.street}, ${this.address.city}, ${this.address.state} ${this.address.zipCode}`;
-});
+  /**
+   * Get locations with capacity info
+   * @returns {Promise<Array>} - Array of locations with capacity information
+   */
+  static async getAllWithCapacity() {
+    try {
+      const locations = await Location.findAll();
 
-// Pre-save middleware to update the updatedAt timestamp
-locationSchema.pre('save', function(next) {
-  this.updatedAt = Date.now();
-  next();
-});
+      // Enhance locations with capacity info
+      const locationsWithCapacity = await Promise.all(
+        locations.map(async location => {
+          const availableSlots = await location.getAvailableSlots();
+          return {
+            ...location.toJSON(),
+            available_slots_count: availableSlots.length
+          };
+        })
+      );
 
-// Method to check if location is open on a specific date and time
-locationSchema.methods.isOpenAt = function(dateTime) {
+      return locationsWithCapacity;
+    } catch (error) {
+      logger.error(`Error getting locations with capacity: ${error.message}`);
+      throw new Error(`Failed to get locations with capacity: ${error.message}`);
+    }
+  }
+}
+
+Location.init(
+  {
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true
+    },
+    name: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      validate: {
+        notEmpty: {
+          msg: 'Location name cannot be empty'
+        }
+      }
+    },
+    address: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      validate: {
+        notEmpty: {
+          msg: 'Location address cannot be empty'
+        }
+      }
+    },
+    capacity: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      validate: {
+        isInt: {
+          msg: 'Capacity must be an integer'
+        },
+        min: {
+          args: [1],
+          msg: 'Capacity must be at least 1'
+        }
+      }
+    },
+    created_at: {
+      type: DataTypes.DATE,
+      defaultValue: DataTypes.NOW
+    }
+  },
+  {
+    sequelize,
+    modelName: 'Location',
+    tableName: 'locations',
+    timestamps: false,
+    underscored: true
+  }
+);
+
+/**
+ * Seed sample locations
+ * @returns {Promise<Array>} - Array of created locations
+ */
+Location.seedSampleData = async () => {
   try {
-    if (!dateTime) return false;
+    logger.info('Seeding sample locations...');
+    const sampleLocations = [
+      { name: 'Downtown Passport Office', address: '123 Main St, City Center', capacity: 50 },
+      { name: 'Westside Passport Center', address: '456 West Ave, Westside', capacity: 30 },
+      { name: 'Eastside Government Building', address: '789 East Blvd, Eastside', capacity: 40 },
+      { name: 'Northside Service Center', address: '101 North Rd, Northside', capacity: 25 },
+      { name: 'Southside Municipal Office', address: '202 South St, Southside', capacity: 35 }
+    ];
 
-    const date = new Date(dateTime);
-    const dayOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][date.getDay()];
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    const timeString = `${hours}:${minutes}`;
-
-    const daySchedule = this.operatingHours.find(h => h.day === dayOfWeek);
-
-    if (!daySchedule || daySchedule.isClosed) {
-      return false;
+    // Check if data already exists
+    const count = await Location.count();
+    if (count > 0) {
+      logger.info(`Locations already seeded (${count} records found). Skipping.`);
+      return await Location.findAll();
     }
 
-    return timeString >= daySchedule.openTime && timeString <= daySchedule.closeTime;
+    const createdLocations = await Location.bulkCreate(sampleLocations);
+    logger.info(`Created ${createdLocations.length} sample locations`);
+    return createdLocations;
   } catch (error) {
-    console.error('Error checking if location is open:', error);
-    return false;
+    logger.error(`Error seeding locations: ${error.message}`);
+    throw new Error(`Failed to seed locations: ${error.message}`);
   }
 };
-
-// Static method to find nearby locations by zipcode
-locationSchema.statics.findByZipCode = async function(zipCode, radiusMiles = 10) {
-  try {
-    // This is a simplified version - in a real implementation you would use geospatial queries
-    // if the database supports them (like MongoDB)
-    return this.find({ 'address.zipCode': zipCode });
-  } catch (error) {
-    console.error('Error finding locations by zip code:', error);
-    return [];
-  }
-};
-
-// Create index for better performance on queries
-locationSchema.index({ 'address.zipCode': 1 });
-locationSchema.index({ isActive: 1 });
-
-const Location = mongoose.model('Location', locationSchema);
 
 module.exports = Location;
