@@ -1,0 +1,24 @@
+{
+  "name": "passport-booking-system-backend",
+  "version": "1.0.0",
+  "description": "Backend for passport booking system",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "express": "^4.17.1",
+    "mongoose": "^6.0.12",
+    "cors": "^2.8.5",
+    "dotenv": "^10.0.0",
+    "winston": "^3.3.3",
+    "joi": "^17.4.2"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.14",
+    "jest": "^27.3.1",
+    "supertest": "^6.1.6"
+  }
+}
